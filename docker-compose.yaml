@@ -48,9 +48,10 @@ x-airflow-common:
   # In order to add custom dependencies or upgrade provider distributions you can use your extended image.
   # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
   # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
+
+  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.1.7}
   &airflow-common
-  image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.1.6}
-  # build: .
+  build: .
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -77,6 +78,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/spark/apps:/opt/spark-apps
+    - ${AIRFLOW_PROJ_DIR:-.}/spark/data:/opt/spark-data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     # redis:
@@ -299,6 +302,54 @@ services:
   #     <<: *airflow-common-depends-on
   #     airflow-init:
   #       condition: service_completed_successfully
+
+  # Spark 4.0 Cluster
+  spark-master:
+    image: spark:4.0.0-java21-python3
+    container_name: spark-master
+    hostname: spark-master
+    command: [ "/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8080" ]
+    environment:
+      - SPARK_DAEMON_JAVA_OPTS=-Dspark.eventLog.enabled=true -Dspark.eventLog.dir=file:/opt/spark/spark-events
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/spark-events:/opt/spark/spark-events
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/apps:/opt/spark-apps
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/data:/opt/spark-data
+    ports:
+      - "7077:7077"
+      - "8081:8080" # Spark Master UI
+
+  spark-worker:
+    image: spark:4.0.0-java21-python3
+    container_name: spark-worker
+    hostname: spark-worker
+    depends_on:
+      - spark-master
+    command: [ "/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077" ]
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/spark-events:/opt/spark/spark-events
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/apps:/opt/spark-apps
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/data:/opt/spark-data
+    ports:
+      - "8082:8081" # Spark Worker UI
+
+  spark-connect:
+    image: spark:4.0.0-java21-python3
+    container_name: spark-connect
+    depends_on:
+      - spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.sql.connect.service.SparkConnectServer --master spark://spark-master:7077 --conf spark.connect.grpc.binding.port=15002 --conf spark.connect.grpc.binding.address=0.0.0.0
+    environment:
+      - _JAVA_OPTIONS=--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Dspark.master=spark://spark-master:7077
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/apps:/opt/spark-apps
+      - ${AIRFLOW_PROJ_DIR:-.}/spark/data:/opt/spark-data
+    ports:
+      - "15002:15002" # Spark Connect gRPC
 
 volumes:
   postgres-db-volume:

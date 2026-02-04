@@ -50,10 +50,6 @@ def user_processing():
         )
 
     # Define Dependencies
-    fake_user_data = is_api_available()
-    create_table >> fake_user_data
-    
-    user_data = extract_user(fake_user_data)
-    store_user(user_data)
+    create_table >> is_api_available() >> extract_user() >> store_user()
 
 user_processing()

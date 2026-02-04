@@ -6,4 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32.5",
+    "apache-airflow-providers-apache-spark>=4.11.2",
+    "pyspark[connect]==4.0.0",  # Must match spark:4.0.0-java21-python3
 ]
