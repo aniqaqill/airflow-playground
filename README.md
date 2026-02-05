@@ -1,6 +1,6 @@
 # Airflow Playground
 
-Experimentation playground for Apache Airflow with Spark 4.0 integration.
+Apache Airflow with Spark 4.0 integration - three approaches demonstrated.
 
 ## Quick Start
 
@@ -10,76 +10,90 @@ docker compose up -d --build
 
 ## Services
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| Airflow UI | http://localhost:8080 | DAG management (airflow/airflow) |
-| Spark Master | http://localhost:8081 | Cluster status |
-| Spark Worker | http://localhost:8082 | Worker status |
-| Spark Connect | grpc://localhost:15002 | gRPC endpoint |
+| Service | URL |
+|---------|-----|
+| Airflow UI | http://localhost:8080 (airflow/airflow) |
+| Spark Master | http://localhost:8081 |
+| Spark Worker | http://localhost:8082 |
 
-## DAGs
+## Three Spark Integration Approaches
 
-### 1. User Processing
-**Purpose**: Learn Airflow fundamentals
+### 1. Spark Connect Inline (`spark_connect_example`)
 
-Simple ETL pipeline demonstrating:
-- Sensors and API calls
-- TaskFlow API
-- PostgreSQL integration
-
-### 2. Spark Processing  
-**Purpose**: Run Spark jobs via Spark Connect
+**PySpark code directly in DAG task.**
 
 ```
-Airflow Task --> Spark Connect (gRPC) --> Spark Cluster --> Shared Filesystem --> Next Task
+Airflow Task --(gRPC)--> Spark Connect --> Spark Cluster
+      └── Returns via XCom
 ```
 
-**Architecture:**
+- No Spark binaries needed
+- No external files
+- Best for: quick jobs, simple transforms
 
-```mermaid
-sequenceDiagram
-    participant A as Airflow Task
-    participant SC as Spark Connect
-    participant SM as Spark Master
-    participant SW as Spark Worker
-    participant FS as Shared Filesystem
-    
-    A->>SC: PySpark remote connection
-    SC->>SM: Submit job
-    SM->>SW: Execute tasks
-    SW->>FS: Write output.json
-    SW-->>SC: Job complete
-    SC-->>A: Return results
-    A->>FS: Read output.json
+### 2. SparkSubmitOperator (`spark_submit_example`)
+
+**External .py/.jar files via spark-submit.**
+
+```
+SparkSubmitOperator --(spark-submit)--> Spark Master --> Worker
+                                                            |
+         Airflow <--(read file)-- Shared Filesystem <-------
 ```
 
-**Key Configuration:**
-- PySpark client version must match Spark server (`pyspark[connect]==4.0.0`)
-- No Spark binaries needed in Airflow container
-- Uses gRPC protocol on port 15002
+- Requires Spark binaries in Airflow container
+- Job files in `spark/apps/`
+- Best for: production jobs, JAR files, existing Spark apps
 
-## Verification
+### 3. Subprocess + Spark Connect (`spark_subprocess_example`)
+
+**External Python files using Spark Connect. Best of both worlds.**
+
+```
+PythonOperator --(subprocess)--> External .py --(gRPC)--> Spark Connect
+      └── Returns via stdout prefix (AIRFLOW_XCOM_JSON:)
+```
+
+- No Spark binaries needed
+- External files for separation
+- Best for: new Spark apps with clean separation
+
+## Comparison
+
+| Aspect | Spark Connect | SparkSubmitOperator | Subprocess |
+|--------|---------------|---------------------|------------|
+| External Files | No | Yes | Yes |
+| Binaries Needed | No | Yes | No |
+| XCom Return | Direct | Filesystem | Stdout prefix |
+| JAR Support | No | Yes | No |
+| Best For | Quick jobs | Production JARs | New Python jobs |
+
+## XCom Return Convention (Subprocess)
+
+External scripts return data by printing to stdout:
+```python
+print(f"AIRFLOW_XCOM_JSON:{json.dumps(metrics)}")
+```
+
+DAG parses this prefix to extract XCom data.
+
+## Connections Required
+
+| Connection ID | Type | Host | Port | Used By |
+|---------------|------|------|------|---------|
+| `spark_default` | Spark | spark://spark-master | 7077 | SparkSubmitOperator |
+| `spark_connect` | Generic | spark-connect | 15002 | Subprocess approach |
+
+## Verify
 
 ```bash
-# Check all services
 docker compose ps
-
-# Verify Spark output
 cat spark/data/output.json
-
-# View Spark Connect logs  
-docker compose logs spark-connect --tail 20
 ```
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Permission denied on logs | `sudo chown -R $(id -u):0 logs/` |
-| Version mismatch error | Pin `pyspark==4.0.0` to match server |
-| DAG not appearing | Check `docker compose logs airflow-dag-processor` |
-
-## Resources
-
-- [Airflow Providers](https://registry.astronomer.io/providers)
-- [Spark Connect](https://spark.apache.org/docs/latest/spark-connect-overview.html)
+| Issue | Fix |
+|-------|-----|
+| Permission denied | `sudo chown -R $(id -u):0 logs/` |
+| Version mismatch | Pin `pyspark==4.0.0` |
